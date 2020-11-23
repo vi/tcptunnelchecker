@@ -1,0 +1,13 @@
+[package]
+name = "tcptunnelchecker"
+version = "0.1.0"
+authors = ["Vitaly _Vi Shukela <vi0oss@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+argh = "0.1.4"
+rand_xorshift = "0.2.0"
+rand = "0.7.3"
+anyhow = "1.0.34"
