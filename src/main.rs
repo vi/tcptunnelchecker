@@ -119,21 +119,32 @@ fn check_closedness(mut s: &TcpStream, how_long_to_wait: Duration) -> Result<boo
     }
 }
 
+#[derive(Clone,Copy)]
+struct CloseDetectOpts {
+    report_buffer_sizes : bool,
+    clog_incoming: bool,
+    clog_outgoing: bool,
+    check_incoming_for_closedness: bool,
+    shutdown_incoming_for_writing: bool,
+    shutdown_outgoing_for_writing: bool,
+    experiment_name: &'static str,
+}
+
 /// Clog both directions of the tunnel by writing, but not reading the data.
 /// Then close of of the sockets. Will RST propagate to the other end?  
-fn closedetect(opts: &Opts, report: bool, clog1: bool, clog2: bool, whichcheck: bool, shutdown1: bool, shutdown2: bool, name: &'static str) -> Result<()> {
+fn closedetect(opts: &Opts, cdo: CloseDetectOpts) -> Result<()> {
     use std::io::{Read,Write};
     let ss = TcpListener::bind(opts.listen)?;
     let g  = std::thread::spawn(move || -> Result<TcpStream> {
         let mut cc = ss.accept()?.0;
         drop(ss);
         cc.set_nonblocking(true)?;
-        if shutdown1 {
+        if cdo.shutdown_incoming_for_writing {
             cc.shutdown(std::net::Shutdown::Write)?;
         }
-        if clog1 {
+        if cdo.clog_incoming {
             let sz = clog(&mut cc)?;
-            if report {
+            if cdo.report_buffer_sizes {
                 println!("One direction buffer: {}", sz);
             }
         }
@@ -142,13 +153,13 @@ fn closedetect(opts: &Opts, report: bool, clog1: bool, clog2: bool, whichcheck: 
     });
     let mut cs = TcpStream::connect(opts.connect)?;
     cs.set_nonblocking(true)?;
-    if shutdown2 {
+    if cdo.shutdown_outgoing_for_writing {
         cs.shutdown(std::net::Shutdown::Write)?;
     }
     
-    if clog2 {
+    if cdo.clog_outgoing {
         let sz = clog(&mut cs)?;
-        if report {
+        if cdo.report_buffer_sizes {
             println!("The other direction buffer: {}", sz);
         }
     }
@@ -159,7 +170,7 @@ fn closedetect(opts: &Opts, report: bool, clog1: bool, clog2: bool, whichcheck: 
 
     sleep(100);
 
-    let s = if whichcheck {
+    let s = if cdo.check_incoming_for_closedness {
         drop(cs);
         cc
     } else {
@@ -169,9 +180,9 @@ fn closedetect(opts: &Opts, report: bool, clog1: bool, clog2: bool, whichcheck: 
 
 
     if check_closedness(&s, Duration::from_millis(500))? {
-        println!("[ OK ] Clogged close test {} passed", name);
+        println!("[ OK ] Clogged close test {} passed", cdo.experiment_name);
     } else {
-        println!("[FAIL] Clogged close test {} failed!", name);
+        println!("[FAIL] Clogged close test {} failed!", cdo.experiment_name);
     }
 
     Ok(())
@@ -182,11 +193,74 @@ fn main() -> Result<()> {
 
     trivial_test_1(&opts)?;
     trivial_test_2(&opts)?;
-    closedetect(&opts, true, true, true, true, false,false,"1")?;
-    closedetect(&opts, false, true, true, false, false,false,"2")?;
-    closedetect(&opts, false, false, true, false, false,false,"3")?;
-    closedetect(&opts, false, true, false, true, false,false,"4")?;
-    closedetect(&opts, false, false, true, false, true,false,"5")?;
-    closedetect(&opts, false, true, false, true, false,true,"6")?;
+
+    let cdo = CloseDetectOpts {
+        report_buffer_sizes : true,
+        clog_incoming : true,
+        clog_outgoing : true,
+        check_incoming_for_closedness: true,
+        shutdown_incoming_for_writing: false,
+        shutdown_outgoing_for_writing: false,
+        experiment_name: "1",
+    };
+    closedetect(&opts, cdo)?;
+
+    let cdo = CloseDetectOpts {
+        report_buffer_sizes : false,
+        clog_incoming : true,
+        clog_outgoing : true,
+        check_incoming_for_closedness: false,
+        shutdown_incoming_for_writing: false,
+        shutdown_outgoing_for_writing: false,
+        experiment_name: "2",
+    };
+    closedetect(&opts, cdo)?;
+
+    let cdo = CloseDetectOpts {
+        report_buffer_sizes : false,
+        clog_incoming : false,
+        clog_outgoing : true,
+        check_incoming_for_closedness: false,
+        shutdown_incoming_for_writing: false,
+        shutdown_outgoing_for_writing: false,
+        experiment_name: "3",
+    };
+    closedetect(&opts, cdo)?;
+
+    let cdo = CloseDetectOpts {
+        report_buffer_sizes : false,
+        clog_incoming : true,
+        clog_outgoing : false,
+        check_incoming_for_closedness: true,
+        shutdown_incoming_for_writing: false,
+        shutdown_outgoing_for_writing: false,
+        experiment_name: "4",
+    };
+    closedetect(&opts, cdo)?;
+
+
+    let cdo = CloseDetectOpts {
+        report_buffer_sizes : false,
+        clog_incoming : false,
+        clog_outgoing : true,
+        check_incoming_for_closedness: false,
+        shutdown_incoming_for_writing: true,
+        shutdown_outgoing_for_writing: false,
+        experiment_name: "5",
+    };
+    closedetect(&opts, cdo)?;
+
+
+    let cdo = CloseDetectOpts {
+        report_buffer_sizes : false,
+        clog_incoming : true,
+        clog_outgoing : false,
+        check_incoming_for_closedness: true,
+        shutdown_incoming_for_writing: false,
+        shutdown_outgoing_for_writing: true,
+        experiment_name: "6",
+    };
+    closedetect(&opts, cdo)?;
+
     Ok(())
 }
