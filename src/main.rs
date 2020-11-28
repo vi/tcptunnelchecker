@@ -89,20 +89,26 @@ fn clog(mut s: impl std::io::Write) -> Result<usize> {
         }
     }
 }
+
+type ClosingNotif = Option<std::sync::Arc<std::sync::atomic::AtomicBool>>;
+
 /// Read and ignore all the data in a separate thread
-fn drain(mut s: impl std::io::Read + Send + 'static) {
+fn drain(mut s: impl std::io::Read + Send + 'static, close_notification: ClosingNotif) {
     std::thread::spawn(move|| {
         let mut buf = [0u8; 1024];
         loop {
             match s.read(&mut buf  [0..]) {
-                Ok(0) => return,
+                Ok(0) => break,
                 Ok(x) => (),
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
                     sleep(10);
                 }
                 Err(e) if e.kind() == ErrorKind::Interrupted => (),
-                Err(e) => return,
+                Err(e) => break,
             }
+        }
+        if let Some(ref x) = close_notification {
+            x.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     });
 }
@@ -113,11 +119,17 @@ fn sleep(ms: u64) {
 }
 
 // Check if docket gets disconnected 
-fn check_closedness(mut s: &TcpStream, how_long_to_wait: Duration) -> Result<bool> {
+fn check_closedness(mut s: &TcpStream, how_long_to_wait: Duration, additional_close_notification: ClosingNotif) -> Result<bool> {
     let deadline = Instant::now() + how_long_to_wait;
     loop {
         if Instant::now() > deadline {
             return Ok(false)
+        }
+
+        if let Some(ref acn) = additional_close_notification {
+            if acn.load(std::sync::atomic::Ordering::SeqCst) {
+                return Ok(true);
+            }
         }
 
         use std::io::Write;
@@ -155,7 +167,8 @@ struct CloseDetectOpts {
 fn closedetect(opts: &Opts, cdo: CloseDetectOpts) -> Result<()> {
     use std::io::{Read,Write};
     let ss = TcpListener::bind(opts.listen)?;
-    let g  = std::thread::spawn(move || -> Result<TcpStream> {
+    let g  = std::thread::spawn(move || -> Result<(TcpStream, ClosingNotif)> {
+        let mut cn : ClosingNotif = None;
         let mut cc = ss.accept()?.0;
         drop(ss);
         cc.set_nonblocking(true)?;
@@ -163,7 +176,8 @@ fn closedetect(opts: &Opts, cdo: CloseDetectOpts) -> Result<()> {
             cc.shutdown(std::net::Shutdown::Write)?;
         }
         if cdo.drain_incoming {
-            drain(cc.try_clone()?);
+            cn = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
+            drain(cc.try_clone()?, cn.clone());
         }
         if cdo.clog_incoming {
             let sz = clog(&mut cc)?;
@@ -172,16 +186,18 @@ fn closedetect(opts: &Opts, cdo: CloseDetectOpts) -> Result<()> {
             }
         }
         //sleep(5000);
-        Ok(cc)
+        Ok((cc, cn))
     });
     let mut cs = TcpStream::connect(opts.connect)?;
+    let mut cs_close : ClosingNotif = None;
     cs.set_nonblocking(true)?;
     if cdo.shutdown_outgoing_for_writing {
         cs.shutdown(std::net::Shutdown::Write)?;
     }
     
     if cdo.drain_outgoing {
-        drain(cs.try_clone()?);
+        cs_close = Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
+        drain(cs.try_clone()?, cs_close.clone());
     }
     if cdo.clog_outgoing {
         let sz = clog(&mut cs)?;
@@ -190,22 +206,21 @@ fn closedetect(opts: &Opts, cdo: CloseDetectOpts) -> Result<()> {
         }
     }
 
-    let cc = g.join().unwrap()?;
+    let (cc,cc_close) = g.join().unwrap()?;
 
     // Now both `cs` and `cc` sockets are fully clogged. Let's close one of them and see what happens to the other one.
 
     sleep(100);
 
-    let s = if cdo.check_incoming_for_closedness {
+    let (s, closenotif) = if cdo.check_incoming_for_closedness {
         drop(cs);
-        cc
+        (cc, cc_close)
     } else {
         drop(cc);
-        cs
+        (cs, cs_close)
     };
 
-
-    if check_closedness(&s, Duration::from_millis(500))? {
+    if check_closedness(&s, Duration::from_millis(500), closenotif)? {
         println!("[ OK ] Clogged close test {} passed", cdo.experiment_name);
     } else {
         println!("[FAIL] Clogged close test {} failed!", cdo.experiment_name);
@@ -218,6 +233,7 @@ fn main() -> Result<()> {
     let opts : Opts = argh::from_env(); 
 
     trivial_test_1(&opts)?;
+
     trivial_test_2(&opts)?;
 
     let cdo = CloseDetectOpts {
@@ -327,6 +343,32 @@ fn main() -> Result<()> {
     };
     closedetect(&opts, cdo)?;
 
+
+    let cdo = CloseDetectOpts {
+        report_buffer_sizes : false,
+        clog_incoming : false,
+        clog_outgoing : true,
+        check_incoming_for_closedness: false,
+        shutdown_incoming_for_writing: true,
+        shutdown_outgoing_for_writing: false,
+        drain_incoming: false,
+        drain_outgoing: true,
+        experiment_name: "9",
+    };
+    closedetect(&opts, cdo)?;
+
+    let cdo = CloseDetectOpts {
+        report_buffer_sizes : false,
+        clog_incoming : true,
+        clog_outgoing : false,
+        check_incoming_for_closedness: true,
+        shutdown_incoming_for_writing: false,
+        shutdown_outgoing_for_writing: true,
+        drain_incoming: true,
+        drain_outgoing: false,
+        experiment_name: "10",
+    };
+    closedetect(&opts, cdo)?;
 
     Ok(())
 }
