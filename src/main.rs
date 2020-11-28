@@ -89,6 +89,24 @@ fn clog(mut s: impl std::io::Write) -> Result<usize> {
         }
     }
 }
+/// Read and ignore all the data in a separate thread
+fn drain(mut s: impl std::io::Read + Send + 'static) {
+    std::thread::spawn(move|| {
+        let mut buf = [0u8; 1024];
+        loop {
+            match s.read(&mut buf  [0..]) {
+                Ok(0) => return,
+                Ok(x) => (),
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    sleep(10);
+                }
+                Err(e) if e.kind() == ErrorKind::Interrupted => (),
+                Err(e) => return,
+            }
+        }
+    });
+}
+
 
 fn sleep(ms: u64) {
     std::thread::sleep(Duration::from_millis(ms));
@@ -127,6 +145,8 @@ struct CloseDetectOpts {
     check_incoming_for_closedness: bool,
     shutdown_incoming_for_writing: bool,
     shutdown_outgoing_for_writing: bool,
+    drain_incoming: bool,
+    drain_outgoing: bool,
     experiment_name: &'static str,
 }
 
@@ -141,6 +161,9 @@ fn closedetect(opts: &Opts, cdo: CloseDetectOpts) -> Result<()> {
         cc.set_nonblocking(true)?;
         if cdo.shutdown_incoming_for_writing {
             cc.shutdown(std::net::Shutdown::Write)?;
+        }
+        if cdo.drain_incoming {
+            drain(cc.try_clone()?);
         }
         if cdo.clog_incoming {
             let sz = clog(&mut cc)?;
@@ -157,6 +180,9 @@ fn closedetect(opts: &Opts, cdo: CloseDetectOpts) -> Result<()> {
         cs.shutdown(std::net::Shutdown::Write)?;
     }
     
+    if cdo.drain_outgoing {
+        drain(cs.try_clone()?);
+    }
     if cdo.clog_outgoing {
         let sz = clog(&mut cs)?;
         if cdo.report_buffer_sizes {
@@ -201,6 +227,8 @@ fn main() -> Result<()> {
         check_incoming_for_closedness: true,
         shutdown_incoming_for_writing: false,
         shutdown_outgoing_for_writing: false,
+        drain_incoming: false,
+        drain_outgoing: false,
         experiment_name: "1",
     };
     closedetect(&opts, cdo)?;
@@ -212,6 +240,8 @@ fn main() -> Result<()> {
         check_incoming_for_closedness: false,
         shutdown_incoming_for_writing: false,
         shutdown_outgoing_for_writing: false,
+        drain_incoming: false,
+        drain_outgoing: false,
         experiment_name: "2",
     };
     closedetect(&opts, cdo)?;
@@ -223,6 +253,8 @@ fn main() -> Result<()> {
         check_incoming_for_closedness: false,
         shutdown_incoming_for_writing: false,
         shutdown_outgoing_for_writing: false,
+        drain_incoming: false,
+        drain_outgoing: false,
         experiment_name: "3",
     };
     closedetect(&opts, cdo)?;
@@ -234,6 +266,8 @@ fn main() -> Result<()> {
         check_incoming_for_closedness: true,
         shutdown_incoming_for_writing: false,
         shutdown_outgoing_for_writing: false,
+        drain_incoming: false,
+        drain_outgoing: false,
         experiment_name: "4",
     };
     closedetect(&opts, cdo)?;
@@ -246,6 +280,8 @@ fn main() -> Result<()> {
         check_incoming_for_closedness: false,
         shutdown_incoming_for_writing: true,
         shutdown_outgoing_for_writing: false,
+        drain_incoming: false,
+        drain_outgoing: false,
         experiment_name: "5",
     };
     closedetect(&opts, cdo)?;
@@ -258,9 +294,39 @@ fn main() -> Result<()> {
         check_incoming_for_closedness: true,
         shutdown_incoming_for_writing: false,
         shutdown_outgoing_for_writing: true,
+        drain_incoming: false,
+        drain_outgoing: false,
         experiment_name: "6",
     };
     closedetect(&opts, cdo)?;
+
+
+    let cdo = CloseDetectOpts {
+        report_buffer_sizes : false,
+        clog_incoming : false,
+        clog_outgoing : true,
+        check_incoming_for_closedness: false,
+        shutdown_incoming_for_writing: false,
+        shutdown_outgoing_for_writing: false,
+        drain_incoming: false,
+        drain_outgoing: true,
+        experiment_name: "7",
+    };
+    closedetect(&opts, cdo)?;
+
+    let cdo = CloseDetectOpts {
+        report_buffer_sizes : false,
+        clog_incoming : true,
+        clog_outgoing : false,
+        check_incoming_for_closedness: true,
+        shutdown_incoming_for_writing: false,
+        shutdown_outgoing_for_writing: false,
+        drain_incoming: true,
+        drain_outgoing: false,
+        experiment_name: "8",
+    };
+    closedetect(&opts, cdo)?;
+
 
     Ok(())
 }
