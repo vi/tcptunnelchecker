@@ -224,22 +224,19 @@ fn closedetect(opts: &Opts, cdo: CloseDetectOpts) -> Result<()> {
     }
     match cdo.mode {
         CloseDetectMode::CloseIncomingCheckOutgoing => {
-            match cdo.outgoing_write {
-                WritingPolicy::Clog => (),
+            match (cdo.outgoing_write, cdo.outgoing_read) {
+                (WritingPolicy::Clog, _) => (),
+                (_, ReadingPolicy::Drain) => (),
                 _ => return Ok(()),
             }
         }
         CloseDetectMode::CloseOutgoingCheckIncoming => {
-            match cdo.incoming_write {
-                WritingPolicy::Clog => (),
+            match (cdo.incoming_write, cdo.incoming_read) {
+                (WritingPolicy::Clog, _) => (),
+                (_, ReadingPolicy::Drain) => (),
                 _ => return Ok(()),
             }
         }
-    }
-    match (cdo.incoming_write, cdo.outgoing_write) {
-        (WritingPolicy::Clog, _) => (),
-        (_, WritingPolicy::Clog) => (),
-        _ => return Ok(()),
     }
 
     let ss = TcpListener::bind(opts.listen)?;
